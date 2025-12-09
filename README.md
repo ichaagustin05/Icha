@@ -40,20 +40,26 @@ Hping3 tools untuk menyerang nama serangannya dari hping3 flooding/synflood atta
 # mitigasi : evillimiter
 mitigasi serangan Dos, menggunakan tools evillimiter sebagai alat untuk memblokir/membatasi bandwitch trafic.
 
-# Cara Kerja evilimiter
-- Memblokir ip attack
-- memblokir ada trafic berlebih
-- lalu membatasi atau memutus koneksinya.
+# Alur Kerja evilimiter
+- Periksa versi evillimiter dengan command sudo evillimiter --version
+- Kemudian masuk ke direktori evillimiter dengan command cd evillimiter
+- Untuk menjalankan evillimiter gunakan command evillimiter
+- Setelah masuk ke evillimiter (Main) >>> buatkan command scan. Untuk perintah ini akan menampilkan ada beberapa hosts yang aktif atau terhubung ke jaringan yang sama.
+- Untuk melihat daftar hosts gunakan command hosts, maka akan muncul daftar hosts aktif atau terhubung beserta ID, IP dan lain - lain. 
+- Dari daftar hosts yang ditampilkan, cari IP yang mencurigakan atau terindikasi melakukan serangan.
+- Untuk memblokir penyerangkan dengan menggunakan command block (ID/IP), penyerang akan memblokir sehingga tidak dapat mengirimkan paket baru ke ke jaringan.
+catatan : Evillimiter hanya membatasi atau memblokir, bukan membersihkan sisa paket serangan.
 
 # pencegahan : Suricata
 Suricata adalah sistem deteksi dan pencegahan intrusi (IDS/IPS) yang bersifat open-source dan dirancang untuk memantau lalu lintas jaringan. IPS (Intrusion Prevention System) adalah sistem yang dirancang untuk mendeteksi dan mencegah ancaman atau serangan yang dapat merusak jaringan atau sistem komputer. IPS berfungsi untuk memantau lalu lintas jaringan secara real-time, menganalisis pola lalu lintas tersebut, dan mengambil tindakan pencegahan jika terdeteksi adanya potensi ancaman. Adapun fungsi ips Fungsi IPS Mencegah serangan masuk sebelum menyebabkan kerusakan, Meningkatkan keamanan dengan monitoring real-time, Melindungi dari DoS dengan memblokir trafik tidak sah, Mengurangi risiko kerusakan karena ancaman dihentikan lebih awal, Memenuhi kebijakan keamanan dengan memblokir aktivitas ilegal/berbahaya.
 
 # Cara Kerja Surricata menggunakan IPS (Intrusion Prevention System)
+- Memantau dan menganalisis lalu lintas jaringan
 - Deteksi Anomali Memeriksa lalu lintas jaringan dan mencari aktivitas yang tidak normal.
 - Signature Detection  Mencocokkan pola serangan yang sudah dikenal (misal DoS, SQLi).
-- Anomaly Detection Membandingkan perilaku jaringan dengan pola normal.
 - Pencegahan Otomatis Memblokir IP/koneksi yang mencurigakan.
-- Tindakan Proaktif  Menghentikan serangan sebelum merusak sistem.
+
+  
 
 
 
