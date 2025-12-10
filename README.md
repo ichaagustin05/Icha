@@ -59,7 +59,456 @@ Suricata adalah sistem deteksi dan pencegahan intrusi (IDS/IPS) yang bersifat op
 - Signature Detection  Mencocokkan pola serangan yang sudah dikenal (misal DoS, SQLi).
 - Pencegahan Otomatis Memblokir IP/koneksi yang mencurigakan.
 
+
+# Code Program Arduino Uno
+#include <Servo.h>
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecureBearSSL.h>
+#include <UniversalTelegramBot.h>
+#include <ESP8266WebServer.h>
+
+// ==== WEB MONITOR ====
+ESP8266WebServer server(80);
+String serialBuffer = "";
+
+// Interval baca sensor
+unsigned long sensorReadInterval = 200;   // 0.2 detik
+unsigned long lastSensorRead = 0;
+
+// Interval cek Telegram
+unsigned long botMessageInterval = 1000;
+unsigned long lastBotUpdate = 0;
+
+// === WiFi & Telegram ===
+const char* ssid     = "Redmi Note 12";
+const char* password = "11111111";
+const char* botToken = "8558012574:AAHspoZrOn9pI2_iOLBG71Owqf9FSzEJDQE";
+int64_t chatID       = 8520396645;
+
+BearSSL::WiFiClientSecure client; 
+UniversalTelegramBot bot(botToken, client);
+
+// === Sensor Ultrasonik ===
+#define trigPin 14   // D5
+#define echoPin 12   // D6
+int distanceCM = 0;
+const int MAX_DISTANCE_CM = 400;
+
+// === Servo ===
+Servo servo;
+#define servoPin 13  // D7
+const int THRESHOLD_CM = 25;   // <= 25 cm → buka
+
+// === DoS Detector (SUPER SIMPLE, BERDASARKAN REQUEST RATE) ===
+unsigned long totalRequests      = 0;
+unsigned long lastWindowRequests = 0;
+unsigned long lastWindowTime     = 0;
+
+bool dosDetected            = false;
+unsigned long dosStartTime  = 0;
+unsigned long lastHighTrafficTime = 0;
+
+const unsigned long DOS_THRESHOLD_RPS = 10;    // >10 req/s → DoS
+const unsigned long DOS_COOLDOWN      = 5000;  // 5 detik low-traffic → dianggap aman
+
+// Loop counter hanya untuk info (tidak untuk deteksi DoS)
+unsigned long loopCounter   = 0;
+unsigned long lastLoopCheck = 0;
+
+// ===================== UTIL WAKTU & LOG =======================
+
+String getTimeString() {
+  unsigned long seconds = millis() / 1000;
+  unsigned long minutes = seconds / 60;
+  unsigned long hours   = minutes / 60;
+  seconds = seconds % 60;
+  minutes = minutes % 60;
   
+  String timeStr = "";
+  if (hours < 10) timeStr += "0";
+  timeStr += String(hours) + ":";
+  if (minutes < 10) timeStr += "0";
+  timeStr += String(minutes) + ":";
+  if (seconds < 10) timeStr += "0";
+  timeStr += String(seconds);
+  
+  return timeStr;
+}
+
+void addToSerialBuffer(String msg) {
+  String timestamped = "[" + getTimeString() + "] " + msg;
+  Serial.println(msg);  // Tetap ke Serial Monitor
+  serialBuffer += timestamped + "\n";
+  
+  // Batasi buffer log web
+  if (serialBuffer.length() > 5000) {
+    serialBuffer = serialBuffer.substring(2000);
+  }
+}
+
+// ===================== NOTIFIKASI DOS =======================
+
+void notifyAttackDetected(String detectionMethod) {
+  // Simpan waktu mulai serangan jika baru
+  if (!dosDetected) {
+    dosDetected = true;
+    dosStartTime = millis();
+  }
+  lastHighTrafficTime = millis();
+
+  // ========== SERIAL ==========
+  Serial.println("\n╔════════════════════════════════════════╗");
+  Serial.println("║   🚨 DOS ATTACK DETECTED! 🚨          ║");
+  Serial.println("╚════════════════════════════════════════╝");
+  Serial.print("Time: ");
+  Serial.println(getTimeString());
+  Serial.print("Method: ");
+  Serial.println(detectionMethod);
+  Serial.println("Status: SYSTEM UNDER ATTACK");
+  Serial.println("════════════════════════════════════════\n");
+  
+  // ========== WEB LOG ==========
+  serialBuffer += "\n";
+  serialBuffer += "╔════════════════════════════════════════╗\n";
+  serialBuffer += "║   🚨 DOS ATTACK DETECTED! 🚨          ║\n";
+  serialBuffer += "╚════════════════════════════════════════╝\n";
+  serialBuffer += "[" + getTimeString() + "] Detection: " + detectionMethod + "\n";
+  serialBuffer += "[" + getTimeString() + "] Status: UNDER ATTACK\n";
+  serialBuffer += "════════════════════════════════════════\n\n";
+  
+  // ========== TELEGRAM ==========
+  if (WiFi.status() == WL_CONNECTED) {
+    String telegramMsg = "🚨 DOS ATTACK DETECTED!\n\n";
+    telegramMsg += "⏰ Time: " + getTimeString() + "\n";
+    telegramMsg += "🎯 Method: " + detectionMethod + "\n";
+    telegramMsg += "📡 IP: " + WiFi.localIP().toString() + "\n";
+    telegramMsg += "💀 Status: System Under Attack\n\n";
+    telegramMsg += "Defense systems monitoring...";
+    
+    bot.sendMessage(String(chatID), telegramMsg, "Markdown");
+  }
+}
+
+void notifyAttackStopped() {
+  if (!dosDetected) return;  // kalau sudah normal, jangan double-reset
+
+  unsigned long attackDuration = 0;
+  if (dosStartTime != 0) {
+    attackDuration = (millis() - dosStartTime) / 1000;
+  }
+
+  dosDetected = false;
+  dosStartTime = 0;
+  lastHighTrafficTime = 0;
+  
+  // ========== SERIAL ==========
+  Serial.println("\n╔════════════════════════════════════════╗");
+  Serial.println("║   ✅ ATTACK STOPPED - RECOVERED       ║");
+  Serial.println("╚════════════════════════════════════════╝");
+  Serial.print("Time: ");
+  Serial.println(getTimeString());
+  Serial.print("Duration: ");
+  Serial.print(attackDuration);
+  Serial.println(" seconds");
+  Serial.println("Status: SYSTEM RECOVERED");
+  Serial.println("════════════════════════════════════════\n");
+  
+  // ========== WEB LOG ==========
+  serialBuffer += "\n";
+  serialBuffer += "╔════════════════════════════════════════╗\n";
+  serialBuffer += "║   ✅ ATTACK STOPPED - RECOVERED       ║\n";
+  serialBuffer += "╚════════════════════════════════════════╝\n";
+  serialBuffer += "[" + getTimeString() + "] Duration: " + String(attackDuration) + "s\n";
+  serialBuffer += "[" + getTimeString() + "] Status: RECOVERED\n";
+  serialBuffer += "════════════════════════════════════════\n\n";
+  
+  // ========== TELEGRAM ==========
+  if (WiFi.status() == WL_CONNECTED) {
+    String telegramMsg = "✅ ATTACK STOPPED\n\n";
+    telegramMsg += "⏱ Duration: " + String(attackDuration) + " seconds\n";
+    telegramMsg += "🔄 Status: System Recovered\n";
+    telegramMsg += "📡 IP: " + WiFi.localIP().toString() + "\n\n";
+    telegramMsg += "All systems operational";
+    
+    bot.sendMessage(String(chatID), telegramMsg, "Markdown");
+  }
+}
+
+// ===================== BACA JARAK =======================
+
+int bacaJarak() {
+  long total = 0;
+  long maxDuration = MAX_DISTANCE_CM * 58;
+
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(trigPin, LOW);
+    delayMicroseconds(2);
+    digitalWrite(trigPin, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(trigPin, LOW);
+
+    total += pulseIn(echoPin, HIGH, maxDuration);
+    delay(10);
+  }
+
+  long duration = total / 3;
+  if (duration == 0) return -1;
+  return (int)(duration * 0.034 / 2.0);   // cm
+}
+
+// ===================== HALAMAN WEB =======================
+
+// Root: langsung ke /monitor
+void handleRoot() {
+  handleMonitor();
+}
+
+void handleMonitor() {
+  totalRequests++;
+
+  String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
+  html += "<meta http-equiv='refresh' content='0.5'>"; // refresh tiap 0.5 detik
+  html += "<title>ESP8266 Serial Log</title>";
+  
+  html += "<style>";
+  html += "body{font-family:monospace;background:#000;color:#0f0;padding:20px;margin:0;}";
+  html += ".header{background:#111;padding:15px;border:2px solid #0f0;margin-bottom:20px;}";
+  html += ".status-normal{color:#0f0;font-size:20px;font-weight:bold;}";
+  html += ".status-attack{color:#f00;font-size:24px;font-weight:bold;animation:blink 0.5s infinite;}";
+  html += "@keyframes blink{0%,50%{opacity:1}51%,100%{opacity:0.3}}";
+  html += "pre{background:#000;color:#0f0;padding:15px;border:1px solid #0f0;height:400px;overflow-y:scroll;font-size:14px;}";
+  html += ".info{background:#111;padding:10px;border:1px solid #0f0;margin:10px 0;}";
+  html += "</style>";
+  
+  html += "</head><body>";
+  
+  // Header
+  html += "<div class='header'>";
+  html += "<h1>🛡 ESP8266 Serial Monitor</h1>";
+  html += "<div class='" + String(dosDetected ? "status-attack" : "status-normal") + "'>";
+  html += dosDetected ? "🚨 SYSTEM UNDER DOS ATTACK!" : "✅ SYSTEM NORMAL";
+  html += "</div>";
+  html += "</div>";
+  
+  // Info panel
+  html += "<div class='info'>";
+  html += "<b>📊 System Info:</b><br>";
+  html += "Distance: " + String(distanceCM) + " cm | ";
+  html += "Servo: " + String(distanceCM <= THRESHOLD_CM ? "OPEN" : "CLOSED") + " | ";
+  html += "Uptime: " + String(millis()/1000) + "s | ";
+  html += "Loops (last sec): " + String(loopCounter) + "/s";
+  html += "</div>";
+  
+  if (dosDetected && dosStartTime != 0) {
+    unsigned long attackTime = (millis() - dosStartTime) / 1000;
+    html += "<div class='info status-attack'>";
+    html += "⚠ <b>Attack Duration: " + String(attackTime) + " seconds</b>";
+    html += "</div>";
+  }
+  
+  html += "<h2>📜 Serial Log:</h2>";
+  html += "<pre>";
+  html += serialBuffer;
+  html += "</pre>";
+  html += "<p style='color:#0f0;'><i>Auto-refresh every 0.5s</i></p>";
+  html += "</body></html>";
+
+  server.send(200, "text/html", html);
+}
+
+void handleNotFound() {
+  totalRequests++;
+  server.send(404, "text/plain", "404 Not Found");
+}
+
+// ===================== TELEGRAM BOT =======================
+
+void handleNewMessages(int num) {
+  for (int i = 0; i < num; i++) {
+    String text    = bot.messages[i].text;
+    int64_t fromID = atoll(bot.messages[i].chat_id.c_str());
+
+    if (fromID != chatID) {
+      bot.sendMessage(String(fromID), "❌ Unauthorized user", "");
+      continue;
+    }
+
+    if (text == "/status") {
+      String reply = "🗑 Smart Trash Status\n\n";
+      reply += "📏 Distance: " + String(distanceCM) + " cm\n";
+      reply += "🚪 Servo: " + String(distanceCM <= THRESHOLD_CM ? "OPEN" : "CLOSED") + "\n";
+      reply += "🛡 DoS: " + String(dosDetected ? "⚠ UNDER ATTACK" : "✅ Normal") + "\n";
+      reply += "🔢 Loop Freq: " + String(loopCounter) + "/s\n";
+      reply += "📡 IP: " + WiFi.localIP().toString() + "\n";
+      reply += "⏱ Uptime: " + String(millis()/1000) + "s";
+      
+      if (dosDetected && dosStartTime != 0) {
+        unsigned long dur = (millis() - dosStartTime) / 1000;
+        reply += "\n⚠ Attack Duration: " + String(dur) + "s";
+      }
+      
+      bot.sendMessage(String(chatID), reply, "Markdown");
+    }
+  }
+}
+
+// ===================== SETUP =======================
+
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  servo.attach(servoPin);
+  servo.write(0);
+
+  Serial.println("=======================================");
+  Serial.println(" SMART TRASH MONITOR + SIMPLE DOS DETECTOR");
+  Serial.println("=======================================\n");
+
+  Serial.print("Connecting WiFi");
+
+  WiFi.begin(ssid, password);
+  client.setInsecure();
+
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+
+  Serial.println("\nWiFi Connected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  // Notifikasi startup
+  String msg = "🟢 Smart Trash Online!\n\n";
+  msg += "📡 IP: " + WiFi.localIP().toString() + "\n";
+  msg += "🌐 Web: http://" + WiFi.localIP().toString() + "/monitor\n";
+  msg += "🛡 DoS Detection: Active (simple RPS-based)\n\n";
+  msg += "System ready for monitoring";
+  bot.sendMessage(String(chatID), msg, "Markdown");
+
+  // Web server routes
+  server.on("/",        handleRoot);
+  server.on("/monitor", handleMonitor);
+  server.onNotFound(    handleNotFound);
+  server.begin();
+
+  lastWindowTime = millis();
+  lastSensorRead = millis();
+  lastLoopCheck  = millis();
+  
+  addToSerialBuffer("✓ System initialized - Simple DoS detection active");
+}
+
+// ===================== LOOP =======================
+
+void loop() {
+  loopCounter++;  // dihitung per detik untuk info saja
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    server.handleClient();
+  }
+
+  unsigned long now = millis();
+
+  // Hitung loop per detik (untuk tampilan saja)
+  if (now - lastLoopCheck >= 1000) {
+    // Setelah 1 detik, nilai loopCounter sekarang dipakai di web
+    // lalu di-reset
+    lastLoopCheck = now;
+    loopCounter = 0;
+  }
+
+  // ---------- DoS DETECTION (Request-based saja) ----------
+  if (now - lastWindowTime >= 1000) {
+    unsigned long reqNow = totalRequests - lastWindowRequests;
+    lastWindowRequests   = totalRequests;
+    lastWindowTime       = now;
+
+    // Jika RPS tinggi → serangan
+    if (reqNow > DOS_THRESHOLD_RPS) {
+      notifyAttackDetected("High Request Rate (" + String(reqNow) + " RPS)");
+    } 
+    // Jika RPS rendah & sebelumnya pernah ada traffic tinggi
+    else {
+      if (dosDetected && lastHighTrafficTime != 0) {
+        // Kalau sudah lebih lama dari cooldown sejak terakhir high-traffic
+        if (now - lastHighTrafficTime >= DOS_COOLDOWN) {
+          notifyAttackStopped();
+        }
+      }
+    }
+  }
+
+  // ---------- SENSOR & SERVO ----------
+  if (now - lastSensorRead > sensorReadInterval) {
+    lastSensorRead = now;
+
+    distanceCM = bacaJarak();
+
+    if (distanceCM != -1) {
+      Serial.print("Jarak: ");
+      Serial.print(distanceCM);
+      Serial.println(" cm");
+
+      if (distanceCM <= THRESHOLD_CM && distanceCM > 0) {
+        servo.write(180);
+        Serial.println("Servo: BUKA");
+      } else {
+        servo.write(0);
+        Serial.println("Servo: TUTUP");
+      }
+
+      Serial.println("------------------");
+
+      serialBuffer += "Jarak: " + String(distanceCM) + " cm\n";
+      if (serialBuffer.length() > 5000) {
+        serialBuffer = serialBuffer.substring(2000);
+      }
+
+    } else {
+      Serial.println("❌ Sensor Error!");
+      serialBuffer += "❌ Sensor Error!\n";
+      if (serialBuffer.length() > 5000) {
+        serialBuffer = serialBuffer.substring(2000);
+      }
+    }
+  }
+
+  // ---------- TELEGRAM POLLING ----------
+  if (WiFi.status() == WL_CONNECTED) {
+    if (now - lastBotUpdate > botMessageInterval) {
+      lastBotUpdate = now;
+
+      int num = bot.getUpdates(bot.last_message_received + 1);
+      while (num) {
+        handleNewMessages(num);
+        num = bot.getUpdates(bot.last_message_received + 1);
+      }
+    }
+  }
+
+  ESP.wdtFeed();
+}
+
+# Command Serangan : Tool hping3 nama serangan flood attack atau synflood attack
+- sudo hping3 -c 20000 -d 120 -S -w 64 -p 80 --flood --rand-source (IP target)
+
+# Command Mitigasi : Evillimiter
+- sudo evillimiter --version
+- cd evillimiter
+- evillimiter
+- (Main) >>> scan
+- (Main) >>> hosts
+- (Main) >>> block (IP/ID)
+
+# Command Pencegahan (log): Suricata
+- sudo cat /var/log/suricata/fast.log
+
+
 
 
 
